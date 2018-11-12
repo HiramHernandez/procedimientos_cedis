@@ -1,0 +1,86 @@
+USE [dsd_tepic]
+GO
+/****** Object:  StoredProcedure [dbo].[Cargar_Mapas]    Script Date: 12/11/2018 04:35:25 p. m. ******/
+SET ANSI_NULLS ON
+GO
+SET QUOTED_IDENTIFIER ON
+GO
+-- =============================================
+-- Author:		<Author,,Name>
+-- Create date: <Create Date,,>
+-- Description:	<Description,,>
+-- =============================================
+ALTER PROCEDURE [dbo].[Cargar_Mapas]
+	-- Add the parameters for the stored procedure here
+	@tipo int, @whereExtra varchar(max), @fecha date, @fecha1 date, @tabla as varchar(20)=''
+AS
+BEGIN
+	
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	declare @lat float,
+	@long float,
+	@total float,
+	@consulta VARCHAR(8000)
+
+	CREATE TABLE #temporalMapas(
+		id_visita INT,
+		id_cliente INT,
+		orden INT,
+		nombre VARCHAR(1000),
+		latitud float,
+		longitud float,
+		dia smallint,
+		id_ruta int,
+		hora_venta varchar(10),
+		vendio smallint,		
+		color varchar(200),
+		tabla varchar(30)
+	)
+	SET NOCOUNT ON;
+
+    -- Insert statements for procedure here
+	IF @tipo = 1 BEGIN
+		SET @consulta = 'SELECT DISTINCT  cat_clientes.id_cliente, cat_clientes_datos_venta.orden, establecimiento as Nombre, latitud, longitud,dia, cat_clientes_datos_venta.id_ruta,1  FROM cat_clientes_datos_venta, cat_clientes, cat_rutas WHERE cat_clientes_datos_venta.id_cliente = cat_clientes.id_cliente AND cat_rutas.id_ruta = cat_clientes_datos_venta.id_ruta  AND latitud IS NOT NULL AND longitud IS NOT NULL AND ' + @whereExtra + '  cat_clientes_datos_venta.orden > 0 AND  cat_clientes.activo = 1 ORDER BY dia,orden,  establecimiento, latitud, longitud'
+		--SELECT @consulta
+		EXEC('INSERT INTO #temporalMapas(id_cliente,orden,nombre,latitud,longitud,dia,id_ruta,vendio) ' + @consulta)
+		SELECT DISTINCT id_cliente,orden,nombre,latitud,longitud,dia,id_ruta,hora_venta,id_visita,color,tabla FROM #temporalMapas WHERE latitud <> 0 AND longitud <> 0 ORDER BY id_ruta, dia, orden
+	END 
+
+	IF @tipo = 2 BEGIN
+	--Colores Verde > Vendio, Rojo > No vendio, Amarillo > No Visito, Negro > Visitado pero de otro día    	
+	--los visitados y del dia que corresponde y que quizas no tengan ventas
+	INSERT INTO #temporalMapas(id_cliente,orden,nombre,latitud,longitud,dia,id_ruta,hora_venta,id_visita,color,tabla)
+	SELECT DISTINCT  c.id_cliente,cd.orden,c.establecimiento as nombre,v.latitud,v.longitud,cd.dia,cd.id_ruta, '' as hora_venta, v.id_visita AS id_visita,IIF(ve.id_venta is null,'ROJO','VERDE') as color,'Datos_Venta' as tabla FROM cat_clientes_datos_venta cd LEFT JOIN visitas v on (cd.id_cliente = v.id_cliente) LEFT JOIN ventas ve on (v.id_visita = ve.id_visita) INNER JOIN cat_clientes c on (cd.id_cliente = c.id_cliente) WHERE justificacion = 'VISITADO' AND  c.activo = 1 AND v.activo=1 AND cd.id_ruta = @whereExtra AND v.fecha BETWEEN @fecha AND @fecha1 AND dia IN (SELECT DATEPART(DW,visitas.fecha) FROM visitas  WHERE visitas.fecha BETWEEN @fecha AND @fecha1 AND activo = 1 GROUP BY fecha)  GROUP BY c.id_cliente,
+cd.orden,c.establecimiento,v.latitud,v.longitud,cd.dia,cd.id_ruta,v.id_visita,ve.id_venta
+	UNION ALL
+	SELECT DISTINCT  c.id_cliente,cd.orden,c.establecimiento as nombre,v.latitud,v.longitud,cd.dia,cd.id_ruta, '' as hora_venta, id_visita AS id_visita,'AMARILLO' as color,'Datos_Venta' as tabla FROM cat_clientes_datos_venta cd LEFT JOIN visitas v on (cd.id_cliente = v.id_cliente) INNER JOIN cat_clientes c on (cd.id_cliente = c.id_cliente) WHERE justificacion = 'NO VISITO' AND  c.activo = 1 AND v.activo=1 AND cd.id_ruta = @whereExtra AND v.fecha BETWEEN @fecha AND @fecha1 AND dia IN (SELECT DATEPART(DW,visitas.fecha) FROM visitas  WHERE visitas.fecha BETWEEN @fecha AND @fecha1 AND activo = 1 GROUP BY fecha) GROUP BY c.id_cliente,
+cd.orden,c.establecimiento,v.latitud,v.longitud,cd.dia,cd.id_ruta,id_visita
+	UNION ALL
+	--los vistados, pero que corresponden a otro dias
+	SELECT DISTINCT  c.id_cliente,cd.orden,c.establecimiento as nombre,v.latitud,v.longitud,cd.dia,cd.id_ruta, '' as hora_venta, id_visita AS id_visita,'NEGRO' as color,'Datos_Venta' as tabla FROM cat_clientes_datos_venta cd LEFT JOIN visitas v on (cd.id_cliente = v.id_cliente) INNER JOIN cat_clientes c on (cd.id_cliente = c.id_cliente) WHERE justificacion = 'VISITADO' AND  c.activo = 1 AND v.activo=1 AND cd.id_ruta = @whereExtra AND v.fecha BETWEEN @fecha AND @fecha1 AND dia NOT IN (SELECT DATEPART(DW,visitas.fecha) FROM visitas  WHERE visitas.fecha BETWEEN @fecha AND @fecha1 AND activo = 1 AND id_visita NOT IN (SELECT id_visita FROM ventas WHERE id_ruta = @whereExtra AND fecha BETWEEN @fecha AND @fecha1) GROUP BY fecha)  GROUP BY c.id_cliente,
+cd.orden,c.establecimiento,v.latitud,v.longitud,cd.dia,cd.id_ruta,id_visita
+	UNION ALL
+	SELECT cd.id_cliente,cd.orden,c.establecimiento AS nombre,v.latitud,v.longitud,cd.dia,v.id_ruta,ISNULL(ve.hora_venta,'') AS hora_venta,ISNULL(ve.id_venta,0) AS id_venta,IIF(ve.id_venta is null,'NEGRO','NEGRO') AS color, 'Visitas_Fuera' FROM visitas v LEFT JOIN ventas ve ON (v.id_visita = ve.id_visita) INNER JOIN cat_clientes_datos_venta cd ON (v.id_cliente = cd.id_cliente) INNER JOIN cat_clientes c ON (cd.id_cliente = c.id_cliente) WHERE v.fecha BETWEEN @fecha AND @fecha1 AND v.activo = 1 AND v.id_ruta = @whereExtra AND cd.id_cliente NOT IN (SELECT cd.id_cliente FROM cat_clientes_datos_venta cd INNER JOIN cat_clientes c ON (cd.id_cliente = c.id_cliente) WHERE activo = 1 AND dia IN (SELECT DATEPART(DW,visitas.fecha) FROM visitas  WHERE fecha BETWEEN @fecha AND @fecha1 AND activo = 1 GROUP BY fecha))
+	
+
+	SELECT DISTINCT id_cliente,orden,nombre,latitud,longitud,dia,id_ruta,hora_venta,id_visita,color,tabla FROM #temporalMapas WHERE latitud <> 0 AND longitud <> 0 ORDER BY id_visita
+
+	END
+
+	IF @tipo = 3 BEGIN
+	INSERT INTO #temporalMapas(id_cliente,orden,nombre,latitud,longitud,dia,id_ruta,hora_venta,id_visita,color,tabla)
+	SELECT DISTINCT  c.id_cliente,cd.orden,c.establecimiento as nombre,v.latitud,v.longitud,cd.dia,cd.id_ruta, '' as hora_venta, v.id_visita AS id_visita,IIF(ve.id_preventa is null,'ROJO','VERDE') as color,'Datos_Venta' as tabla FROM cat_clientes_datos_venta cd LEFT JOIN visitas v on (cd.id_cliente = v.id_cliente) LEFT JOIN preventas ve on (v.id_visita = ve.id_visita) INNER JOIN cat_clientes c on (cd.id_cliente = c.id_cliente) WHERE justificacion = 'VISITADO' AND  c.activo = 1 AND v.activo=1 AND cd.id_ruta = @whereExtra AND v.fecha BETWEEN @fecha AND @fecha1 AND dia IN (SELECT DATEPART(DW,visitas.fecha) FROM visitas  WHERE visitas.fecha BETWEEN @fecha AND @fecha1 AND activo = 1 GROUP BY fecha)  GROUP BY c.id_cliente,
+cd.orden,c.establecimiento,v.latitud,v.longitud,cd.dia,cd.id_ruta,v.id_visita,ve.id_preventa
+UNION ALL
+SELECT DISTINCT  c.id_cliente,cd.orden,c.establecimiento as nombre,v.latitud,v.longitud,cd.dia,cd.id_ruta, '' as hora_venta, id_visita AS id_visita,'AMARILLO' as color,'Datos_Venta' as tabla FROM cat_clientes_datos_venta cd LEFT JOIN visitas v on (cd.id_cliente = v.id_cliente) INNER JOIN cat_clientes c on (cd.id_cliente = c.id_cliente) WHERE justificacion = 'NO VISITO' AND  c.activo = 1 AND v.activo=1 AND cd.id_ruta = @whereExtra AND v.fecha BETWEEN  @fecha AND @fecha1 AND dia IN (SELECT DATEPART(DW,visitas.fecha) FROM visitas  WHERE visitas.fecha BETWEEN  @fecha AND @fecha1 AND activo = 1 GROUP BY fecha) GROUP BY c.id_cliente,
+cd.orden,c.establecimiento,v.latitud,v.longitud,cd.dia,cd.id_ruta,id_visita
+UNION ALL
+SELECT cd.id_cliente,cd.orden,c.establecimiento AS nombre,v.latitud,v.longitud,cd.dia,v.id_ruta,ISNULL(pv.hora_preventa,'') AS hora_venta,ISNULL(pv.id_preventa,0) AS id_venta,IIF(id_preventa is null,'NEGRO','NEGRO') AS color, 'Visitas_Fuera' FROM visitas v LEFT JOIN preventas pv ON (v.id_visita = pv.id_visita) INNER JOIN cat_clientes_datos_venta cd ON (v.id_cliente = cd.id_cliente) INNER JOIN cat_clientes c ON (cd.id_cliente = c.id_cliente) WHERE v.fecha BETWEEN @fecha AND @fecha1 AND v.activo = 1 AND v.id_ruta = @whereExtra AND cd.id_cliente NOT IN (SELECT cd.id_cliente FROM cat_clientes_datos_venta cd INNER JOIN cat_clientes c ON (cd.id_cliente = c.id_cliente) WHERE activo = 1 AND dia IN (SELECT DATEPART(DW,visitas.fecha) FROM visitas  WHERE fecha BETWEEN @fecha AND @fecha1 AND activo = 1 GROUP BY fecha))
+
+	SELECT DISTINCT id_cliente,orden,nombre,latitud,longitud,dia,id_ruta,hora_venta,id_visita,color,tabla FROM #temporalMapas WHERE latitud <> 0 AND longitud <> 0 ORDER BY id_visita
+	END
+	     
+	
+END
+
